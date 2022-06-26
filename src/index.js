@@ -33,22 +33,20 @@ function createTextElement(text) {
     }
 }
 
-
+let nextUnitOfWork = null
+let wipRoot = null
 
 function render(elemet, container) {
-    // elemet.props.children.forEach(child => {
-    //     render(child, dom)
-    // });
-    // container.appendChild(dom)
-
     // 设置下一个工作单元（nextUnitOfWork）
     // 设置 fiber 树的根（root fiber
-    nextUnitOfWork = {
+    wipRoot = {
         dom: container,
         props: {
             children: [elemet]
         }
     }
+
+    nextUnitOfWork = wipRoot
 }
 
 function createDom(fiber) {
@@ -68,8 +66,6 @@ function createDom(fiber) {
     return dom
 }
 
-let nextUnitOfWork = null
-
 function workLoop(deadLine) {
     let shouldYield = false
     while (nextUnitOfWork && !shouldYield) {
@@ -77,10 +73,31 @@ function workLoop(deadLine) {
         shouldYield = deadLine.timeRemaining() < 1
     }
 
+    // 一旦结束所有工作（因为没有下一个工作单元），便将整个 fiber 树提交给 DOM
+    if (!nextUnitOfWork && wipRoot) {
+        commitRoot()
+    }
+
     requestIdleCallback(workLoop)
 }
 // 浏览器在主线程空闲时运行回调
 requestIdleCallback(workLoop)
+
+function commitRoot() {
+    // 添加节点到root
+    commitWork(wipRoot.child)
+    wipRoot = null
+}
+
+function commitWork(fiber) {
+    if (!fiber) {
+        return
+    }
+    const domParent = fiber.parent.dom
+    domParent.appendChild(fiber.dom)
+    commitWork(fiber.child)
+    commitWork(fiber.sibling)
+}
 
 
 /**
@@ -94,9 +111,9 @@ function performUnitOfWork(fiber) {
     if (!fiber.dom) {
         fiber.dom = createDom(fiber)
     }
-    if (fiber.parent) {
-        fiber.parent.dom.appendChild(fiber.dom)
-    }
+    // if (fiber.parent) {
+    //     fiber.parent.dom.appendChild(fiber.dom)
+    // }
     // 创建新的fiber
     const elemets = fiber.props.children
     let index = 0
@@ -112,16 +129,16 @@ function performUnitOfWork(fiber) {
 
         // 每一个 fiber 都会链接到自身的第一个子节点、下一个兄弟节点和父节点。
         if (index === 0) {
-            fiber.child = newFiber// 第一个字节点
+            fiber.child = newFiber// 第一个子节点
         } else {
             prevSibling.sibling = newFiber// 下一个兄弟节点
         }
 
         prevSibling = newFiber
-        indx++
+        index++
     }
     // 返回 nextUnitOfWork
-    // 开始查找下一个工作单元，我们首先从其子节点开始查找，
+    // 开始查找下一个工作单元，首先从其子节点开始查找，
     // 然后找其兄弟节点，再找叔叔节点，依此推内。
     // 或者到根节点结束
     if (fiber.child) {
