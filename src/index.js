@@ -35,6 +35,8 @@ function createTextElement(text) {
 
 let nextUnitOfWork = null
 let wipRoot = null
+let currentRoot = null
+let deletions = null
 
 function render(elemet, container) {
     // 设置下一个工作单元（nextUnitOfWork）
@@ -43,11 +45,22 @@ function render(elemet, container) {
         dom: container,
         props: {
             children: [elemet]
-        }
+        },
+        alternate: currentRoot// 指向旧的 fiber
     }
-
+    deletions = []
     nextUnitOfWork = wipRoot
 }
+
+const isEvent = (key) => key.startsWith('on')
+
+const isProperty = (key) => key !== 'children'
+
+const isNew = (prev, next) => key => prev[key] !== next[key]
+
+const isGone = (prev, next) => key => !(key in next)
+
+const getEventType = (name) => name.toLowerCase().substring(2)
 
 function createDom(fiber) {
     const dom =
@@ -55,15 +68,45 @@ function createDom(fiber) {
             ? document.createTextNode('')
             : document.createElement(fiber.type)
 
-    const isProperty = (key) => key !== 'children'
-
-    Object.keys(fiber.props)
-        .filter(isProperty)
-        .forEach(name => {
-            dom[name] = fiber.props[name]
-        })
+    updateDom(dom, {}, fiber.props)
 
     return dom
+}
+
+function updateDom(dom, prevProps, nextProps) {
+    // 删除旧的属性
+    Object.keys(prevProps)
+        .filter(isProperty)
+        .filter(isGone(prevProps, nextProps))
+        .forEach(name => {
+            dom[name] = ''
+        })
+
+    // 删除旧的或者已改变的事件监听器
+    Object.keys(prevProps)
+        .filter(isEvent)
+        .filter(key => isGone(prevProps, nextProps)(key) || isNew(prevProps, nextProps)(key))
+        .forEach(name => {
+            const eventType = getEventType(name)
+            dom.removeEventListener(eventType, prevProps[name])
+        })
+
+    // 设置新的属性
+    Object.keys(nextProps)
+        .filter(isProperty)
+        .filter(isNew(prevProps, nextProps))
+        .forEach(name => {
+            dom[name] = nextProps[name]
+        })
+
+    // 添加事件监听器
+    Object.keys(nextProps)
+        .filter(isEvent)
+        .filter(isNew(prevProps, nextProps))
+        .forEach(name => {
+            const eventType = getEventType(name)
+            dom.addEventListener(eventType, nextProps[name])
+        })
 }
 
 function workLoop(deadLine) {
@@ -84,8 +127,12 @@ function workLoop(deadLine) {
 requestIdleCallback(workLoop)
 
 function commitRoot() {
+    // 先处理需要删除的节点
+    deletions.forEach(commitWork)
+    // 剩下就只有添加和更新
     // 添加节点到root
     commitWork(wipRoot.child)
+    currentRoot = wipRoot
     wipRoot = null
 }
 
@@ -94,7 +141,13 @@ function commitWork(fiber) {
         return
     }
     const domParent = fiber.parent.dom
-    domParent.appendChild(fiber.dom)
+    if (fiber.effectTag === 'PLACEMENT' && fiber.dom != null) {
+        domParent.appendChild(fiber.dom)
+    } else if (fiber.effectTag === 'UPDATE' && fiber.dom != null) {
+        updateDom(fiber.dom, fiber.alternate.props, fiber.props)
+    } else if (fiber.effectTag === 'DELETION') {
+        domParent.removeChild(fiber.dom)
+    }
     commitWork(fiber.child)
     commitWork(fiber.sibling)
 }
@@ -116,27 +169,7 @@ function performUnitOfWork(fiber) {
     // }
     // 创建新的fiber
     const elemets = fiber.props.children
-    let index = 0
-    let prevSibling = null
-    while (index < elemets.length) {
-        const elemet = elemets[index]
-        const newFiber = {
-            type: elemet.type,
-            props: elemet.props,
-            parent: fiber,// 父节点
-            dom: null
-        }
-
-        // 每一个 fiber 都会链接到自身的第一个子节点、下一个兄弟节点和父节点。
-        if (index === 0) {
-            fiber.child = newFiber// 第一个子节点
-        } else {
-            prevSibling.sibling = newFiber// 下一个兄弟节点
-        }
-
-        prevSibling = newFiber
-        index++
-    }
+    reconcileChildren(fiber, elemets)
     // 返回 nextUnitOfWork
     // 开始查找下一个工作单元，首先从其子节点开始查找，
     // 然后找其兄弟节点，再找叔叔节点，依此推内。
@@ -153,15 +186,77 @@ function performUnitOfWork(fiber) {
     }
 }
 
+function reconcileChildren(wipFiber, elemets) {
+    let index = 0
+    let oldFiber = wipFiber.alternate && wipFiber.alternate.child
+    let prevSibling = null
+    while (index < elemets.length || oldFiber != null) {
+        const elemet = elemets[index]
+        let newFiber = null
 
-/**@jsx Zeact.createElement */
-const elemet = (
-    // eslint-disable-next-line
-    <div title="foo" style="background: salmon">
-        <h1>bardfg</h1>
-        <br />
-    </div>
-)
+        const sameType = oldFiber && elemet && elemet.type === oldFiber.type
+
+        if (sameType) {
+            // 更新node
+            newFiber = {
+                type: elemet.type,
+                props: elemet.props,
+                dom: oldFiber.dom,
+                parent: wipFiber,
+                alternate: oldFiber,
+                effectTag: 'UPDATE',
+            }
+        }
+
+        if (elemet && !sameType) {
+            // 新增node
+            newFiber = {
+                type: elemet.type,
+                props: elemet.props,
+                dom: null,
+                parent: wipFiber,
+                alternate: null,
+                effectTag: 'PLACEMENT',
+            }
+        }
+
+        if (oldFiber && !sameType) {
+            // 删除oldFiber的node
+            oldFiber.effectTag = 'DELETION'
+            deletions.push(oldFiber)
+        }
+
+        // 比较旧的fiber和element
+        if (oldFiber) {
+            oldFiber = oldFiber.sibling
+        }
+
+        // 每一个 fiber 都会链接到自身的第一个子节点、下一个兄弟节点和父节点。
+        if (index === 0) {
+            wipFiber.child = newFiber // 第一个子节点
+        } else {
+            prevSibling.sibling = newFiber // 下一个兄弟节点
+        }
+
+        prevSibling = newFiber
+        index++
+    }
+}
+
+
+// /**@jsx Zeact.createElement */
+// const elemet = (
+//     // eslint-disable-next-line
+//     <div title="foo" style="background: salmon">
+//         <div>
+//             <h1 title='1'>1</h1>
+//             <h2 title='2'>2</h2>
+//             <h3 title='3'>3</h3>
+//         </div>
+//         <br />
+//         <h1>4</h1>
+//     </div>
+// )
 // const elemet = Zeact.createElement(
 //     'div',
 //     { id: 'foo' },
@@ -170,4 +265,21 @@ const elemet = (
 // )
 
 const container = document.getElementById('root')
-Zeact.render(elemet, container)
+// Zeact.render(elemet, container)
+
+const updateValue = e => {
+    rerender(e.target.value)
+}
+
+const rerender = value => {
+    /**@jsx Zeact.createElement */
+    const element = (
+        <div>
+            <input onInput={updateValue} value={value} />
+            <h2>Hello {value}</h2>
+        </div>
+    )
+    Zeact.render(element, container)
+}
+
+rerender("World")
