@@ -11,6 +11,7 @@ function isObject(obj) {
 }
 
 function createElement(type, props, ...children) {
+    console.log(type, props, children);
     return {
         type,
         props: {
@@ -61,6 +62,8 @@ const isNew = (prev, next) => key => prev[key] !== next[key]
 const isGone = (prev, next) => key => !(key in next)
 
 const getEventType = (name) => name.toLowerCase().substring(2)
+
+const isFunctionComponent = (fiber) => fiber.type instanceof Function
 
 function createDom(fiber) {
     const dom =
@@ -140,18 +143,30 @@ function commitWork(fiber) {
     if (!fiber) {
         return
     }
-    const domParent = fiber.parent.dom
+    let domParentFiber = fiber.parent
+    while (!domParentFiber.dom) {
+        domParentFiber = domParentFiber.parent
+    }
+    const domParent = domParentFiber.dom
     if (fiber.effectTag === 'PLACEMENT' && fiber.dom != null) {
         domParent.appendChild(fiber.dom)
     } else if (fiber.effectTag === 'UPDATE' && fiber.dom != null) {
         updateDom(fiber.dom, fiber.alternate.props, fiber.props)
     } else if (fiber.effectTag === 'DELETION') {
-        domParent.removeChild(fiber.dom)
+        commitDeletion(fiber, domParent)
     }
     commitWork(fiber.child)
     commitWork(fiber.sibling)
 }
 
+//在删除节点时，找到具体的带有 DOM 节点的子节点
+function commitDeletion(fiber, domParent) {
+    if (fiber.dom) {
+        domParent.removeChild(fiber.dom)
+    } else {
+        commitDeletion(fiber.child, domParent)
+    }
+}
 
 /**
  * 对每一个 fiber
@@ -160,16 +175,12 @@ function commitWork(fiber) {
  * 3 选择下一个工作单元
  */
 function performUnitOfWork(fiber) {
-    // 添加 dom 节点
-    if (!fiber.dom) {
-        fiber.dom = createDom(fiber)
+    if (isFunctionComponent(fiber)) {
+        updateFunctionComponent(fiber)
+    } else {
+        updateHostComponent(fiber)
     }
-    // if (fiber.parent) {
-    //     fiber.parent.dom.appendChild(fiber.dom)
-    // }
-    // 创建新的fiber
-    const elemets = fiber.props.children
-    reconcileChildren(fiber, elemets)
+
     // 返回 nextUnitOfWork
     // 开始查找下一个工作单元，首先从其子节点开始查找，
     // 然后找其兄弟节点，再找叔叔节点，依此推内。
@@ -186,12 +197,30 @@ function performUnitOfWork(fiber) {
     }
 }
 
-function reconcileChildren(wipFiber, elemets) {
+// 函数组件
+function updateFunctionComponent(fiber) {
+    const children = [fiber.type(fiber.props)]
+    // 调和
+    reconcileChildren(fiber, children)
+}
+
+function updateHostComponent(fiber) {
+    // 添加 dom 节点
+    if (!fiber.dom) {
+        fiber.dom = createDom(fiber)
+    }
+    // 调和
+    // 创建新的fiber
+    const elements = fiber.props.children
+    reconcileChildren(fiber, elements)
+}
+
+function reconcileChildren(wipFiber, elements) {
     let index = 0
     let oldFiber = wipFiber.alternate && wipFiber.alternate.child
     let prevSibling = null
-    while (index < elemets.length || oldFiber != null) {
-        const elemet = elemets[index]
+    while (index < elements.length || oldFiber != null) {
+        const elemet = elements[index]
         let newFiber = null
 
         const sameType = oldFiber && elemet && elemet.type === oldFiber.type
@@ -267,19 +296,27 @@ function reconcileChildren(wipFiber, elemets) {
 const container = document.getElementById('root')
 // Zeact.render(elemet, container)
 
-const updateValue = e => {
-    rerender(e.target.value)
-}
+// const updateValue = e => {
+//     rerender(e.target.value)
+// }
 
-const rerender = value => {
-    /**@jsx Zeact.createElement */
-    const element = (
-        <div>
-            <input onInput={updateValue} value={value} />
-            <h2>Hello {value}</h2>
-        </div>
-    )
-    Zeact.render(element, container)
-}
+// const rerender = value => {
+//     /**@jsx Zeact.createElement */
+//     const element = (
+//         <div>
+//             <input onInput={updateValue} value={value} />
+//             <h2>Hello {value}</h2>
+//         </div>
+//     )
+//     Zeact.render(element, container)
+// }
 
-rerender("World")
+// rerender("World")
+
+/**@jsx Zeact.createElement */
+function App(props) {
+    return <h1>hi, {props.name}</h1>
+}
+/**@jsx Zeact.createElement */
+const element = <App name="foo" />
+Zeact.render(element, container)
