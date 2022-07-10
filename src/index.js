@@ -1,6 +1,7 @@
 const Zeact = {
     createElement,
-    render
+    render,
+    useState
 }
 
 const TEXT_ELEMENT = 'TEXT_ELEMENT'
@@ -197,11 +198,46 @@ function performUnitOfWork(fiber) {
     }
 }
 
+let wipFiber;
+let hookIndex;
+
 // 函数组件
 function updateFunctionComponent(fiber) {
+    wipFiber = fiber
+    hookIndex = 0
+    wipFiber.hooks = []
     const children = [fiber.type(fiber.props)]
     // 调和
     reconcileChildren(fiber, children)
+}
+
+function useState(initial) {
+    const oldHook =
+        wipFiber.alternate &&
+        wipFiber.alternate.hooks &&
+        wipFiber.alternate.hooks[hookIndex]
+    const hook = {
+        state: oldHook ? oldHook.state : initial,
+        queue: []
+    }
+    const actions = oldHook ? oldHook.queue : []
+    actions.forEach(action => {
+        hook.state = action(oldHook.state)
+    })
+    const setState = action => {
+        hook.queue.push(action)
+
+        wipRoot = {
+            dom: currentRoot.dom,
+            props: currentRoot.props,
+            alternate: currentRoot
+        }
+        nextUnitOfWork = wipRoot
+        deletions = []
+    }
+    wipFiber.hooks.push(hook)
+    hookIndex++
+    return [hook.state, setState]
 }
 
 function updateHostComponent(fiber) {
@@ -315,7 +351,8 @@ const container = document.getElementById('root')
 
 /**@jsx Zeact.createElement */
 function App(props) {
-    return <h1>hi, {props.name}</h1>
+    const [count, setCount] = Zeact.useState(1)
+    return <h1 onClick={() => setCount(c => c + 1)}>hi, {count},{props.name}</h1>
 }
 /**@jsx Zeact.createElement */
 const element = <App name="foo" />
